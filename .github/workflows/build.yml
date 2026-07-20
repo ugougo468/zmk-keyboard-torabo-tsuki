@@ -1,6 +1,80 @@
 name: Build ZMK firmware
-on: [push, pull_request, workflow_dispatch]
+on: [push, workflow_dispatch]
 
 jobs:
   build:
-    uses: zmkfirmware/zmk/.github/workflows/build-user-config.yml@v0.2
+    runs-on: ubuntu-latest
+    container:
+      image: zmkfirmware/zmk-build-arm:stable
+    name: Build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shield: torabo_tsuki_left
+            snippet_arg: "-S studio-rpc-usb-uart"
+            cmake_args: "-DCONFIG_ZMK_SPLIT_ROLE_CENTRAL=y"
+            artifact_name: torabo_tsuki_left_central
+          - shield: torabo_tsuki_right
+            snippet_arg: "-S studio-rpc-usb-uart"
+            cmake_args: ""
+            artifact_name: torabo_tsuki_right_peripheral
+          - shield: torabo_tsuki_left
+            snippet_arg: "-S studio-rpc-usb-uart"
+            cmake_args: ""
+            artifact_name: torabo_tsuki_left_peripheral
+          - shield: torabo_tsuki_right
+            snippet_arg: "-S studio-rpc-usb-uart"
+            cmake_args: "-DCONFIG_ZMK_SPLIT_ROLE_CENTRAL=y"
+            artifact_name: torabo_tsuki_right_central
+          - shield: settings_reset
+            snippet_arg: ""
+            cmake_args: ""
+            artifact_name: settings_reset
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare isolated config workspace
+        run: |
+          mkdir -p /tmp/zmk-config
+          cp -R config /tmp/zmk-config/
+
+      - name: West Init
+        working-directory: /tmp/zmk-config
+        run: west init -l config
+
+      - name: West Update
+        working-directory: /tmp/zmk-config
+        run: west update
+
+      - name: West Zephyr export
+        working-directory: /tmp/zmk-config
+        run: west zephyr-export
+
+      - name: West Build
+        working-directory: /tmp/zmk-config
+        run: west build -s zmk/app -b ble_micro_pro ${{ matrix.snippet_arg }} -d /tmp/build -- -DZMK_CONFIG=/tmp/zmk-config/config -DZMK_EXTRA_MODULES=$GITHUB_WORKSPACE -DSHIELD=${{ matrix.shield }} ${{ matrix.cmake_args }}
+
+      - name: Collect artifact
+        run: |
+          mkdir -p /tmp/artifacts
+          cp /tmp/build/zephyr/zmk.uf2 /tmp/artifacts/${{ matrix.artifact_name }}.uf2
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifact-${{ matrix.artifact_name }}
+          path: /tmp/artifacts
+
+  merge:
+    runs-on: ubuntu-latest
+    needs: build
+    name: Merge Output Artifacts
+    steps:
+      - name: Merge Artifacts
+        uses: actions/upload-artifact/merge@v4
+        with:
+          name: firmware
+          pattern: artifact-*
+          delete-merged: true
